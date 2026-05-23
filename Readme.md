@@ -10,7 +10,7 @@ This repository contains phase 1:
 | Phase | Goal |
 |-------|------|
 | Phase 1 — Docker | Containerize the app with a Dockerfile, Docker Compose, etcccccccc.. |
-| Phase 2 — CI/CD | Three GitHub Actions pipelines (`dev`, `test`, `prod`) deploying to one shared EC2 instance using three different deployment philosophies. |
+| Phase 2 — CI/CD | Working on it. |
 
 ---
 
