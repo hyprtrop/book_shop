@@ -1,0 +1,42 @@
+# ----------------------------------------------------------------------
+# Phase 2 Dockerfile — artifact-first build.
+# This file REPLACES the Phase 1 Dockerfile on the dev/test branches.
+# It MUST NOT install dependencies from the repo source tree —
+# everything comes out of the build artifact (app-<sha>.tar.gz).
+# ----------------------------------------------------------------------
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential libpq-dev netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# The CI pipeline builds an archive and writes it to artifacts/app-<sha>.tar.gz
+# then passes the filename via --build-arg ARTIFACT_FILE=...
+ARG ARTIFACT_FILE
+RUN test -n "${ARTIFACT_FILE}" || (echo "ARTIFACT_FILE build-arg is required" && exit 1)
+
+# Copy ONLY the artifact into the image, then extract it. We do not COPY the
+# source tree, so a stale `book-shop/` in the workspace cannot influence the
+# image — proving the container ships exactly what was packaged.
+COPY artifacts/${ARTIFACT_FILE} /tmp/app.tar.gz
+RUN tar -xzf /tmp/app.tar.gz -C /app --strip-components=0 \
+    && rm /tmp/app.tar.gz \
+    && ls -la /app
+
+# Frozen deps were packaged inside the artifact as requirements.txt
+RUN pip install --upgrade pip && pip install -r /app/requirements.txt
+
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+EXPOSE 8000
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["gunicorn", "book_shop.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]

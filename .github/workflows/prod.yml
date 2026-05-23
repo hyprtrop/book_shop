@@ -1,0 +1,64 @@
+name: prod — promotion only
+
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch:
+
+jobs:
+  promote-and-deploy:
+    runs-on: ubuntu-latest
+    # Bonus: gate prod deploys behind a manual approval reviewer list.
+    # Configure under Settings -> Environments -> production.
+    environment: production
+
+    steps:
+      - name: Sanity check — IMAGE_VERSION must be set
+        run: |
+          if [ -z "${{ vars.IMAGE_VERSION }}" ]; then
+            echo "::error::Repository variable IMAGE_VERSION is not set."
+            exit 1
+          fi
+          echo "Promoting image version: ${{ vars.IMAGE_VERSION }}"
+
+      - name: Deploy to EC2 (prod)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host:     ${{ vars.EC2_HOST }}
+          username: ${{ vars.EC2_USER }}
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            APP_DIR=~/bookshop/prod
+            mkdir -p "$APP_DIR"
+            cd "$APP_DIR"
+
+            # Pull compose + nginx config from the prod branch
+            curl -fsSL -o compose.deploy.yml \
+              https://raw.githubusercontent.com/${{ github.repository }}/prod/compose.deploy.yml
+            curl -fsSL -o nginx.conf \
+              https://raw.githubusercontent.com/${{ github.repository }}/prod/nginx.conf
+
+            cat > .env <<EOF
+            SECRET_KEY=${{ secrets.SECRET_KEY_PROD }}
+            DEBUG=False
+            ALLOWED_HOSTS=${{ vars.EC2_HOST }},localhost,127.0.0.1
+            POSTGRES_DB=${{ secrets.POSTGRES_DB_PROD }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER_PROD }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD_PROD }}
+            POSTGRES_HOST=db
+            POSTGRES_PORT=5432
+            EOF
+
+            export BACKEND_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_VERSION }}"
+            export NGINX_PORT=80
+
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            # Pull the already-built, already-tested image. No build, no buildx.
+            docker pull "$BACKEND_IMAGE"
+
+            docker compose -p prod -f compose.deploy.yml down || true
+            BACKEND_IMAGE="$BACKEND_IMAGE" NGINX_PORT="$NGINX_PORT" \
+              docker compose -p prod -f compose.deploy.yml up -d
+            docker compose -p prod -f compose.deploy.yml ps

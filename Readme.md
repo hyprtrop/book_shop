@@ -1,3 +1,20 @@
-# Django 4.0.4 Tutorial Series
-## Full Documentation is here 
-[Django 4.0.4 Best Practices Tutorial : Part 1](https://ayat.hashnode.dev/django-404-best-practices-tutorial-part-1)
+# Book Shop — Special Topics
+
+**Student:** Osama Alawna
+**Student ID:** 20220137
+**Group size:** 1
+**Upstream repo:** https://github.com/ayat93a/book_shop
+
+This repository contains phase 1:
+
+| Phase | Goal |
+|-------|------|
+| Phase 1 — Docker | Containerize the app with a Dockerfile, Docker Compose, etcccccccc.. |
+| Phase 2 — CI/CD | Three GitHub Actions pipelines (`dev`, `test`, `prod`) deploying to one shared EC2 instance using three different deployment philosophies. |
+
+---
+
+## License / credits
+
+Application code: [github.com/ayat93a/book_shop](https://github.com/ayat93a/book_shop).
+Phase 1 Currently: Osama Alawna (Student ID 20220137).

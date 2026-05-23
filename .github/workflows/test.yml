@@ -1,0 +1,116 @@
+name: test — image-first
+
+on:
+  push:
+    branches: [test]
+  workflow_dispatch:
+
+env:
+  ARTIFACT_NAME: app-${{ github.sha }}.tar.gz
+  IMAGE_TAG: test-${{ github.sha }}
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v4
+        with:
+          ref: test
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 1) FRESH artifact build (NOT pulling from dev's artifacts/)
+      - name: Install deps + collect static
+        working-directory: book-shop
+        env:
+          SECRET_KEY: ci-build-key-not-used-at-runtime
+          ALLOWED_HOSTS: "*"
+          DEBUG: "False"
+          POSTGRES_DB: ci
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_HOST: localhost
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ../requirements.txt
+          python manage.py collectstatic --noinput
+
+      - name: Package fresh artifact
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts build/app
+          cp -R book-shop/. build/app/
+          cp requirements.txt build/app/requirements.txt
+          tar -czf "artifacts/${ARTIFACT_NAME}" -C build/app .
+          ls -lh "artifacts/${ARTIFACT_NAME}"
+
+      # 2) Build image from the fresh artifact (same Dockerfile contract as dev)
+      - name: Use artifact-based Dockerfile
+        run: cp Dockerfile.artifact Dockerfile
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build image
+        run: |
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:${IMAGE_TAG}"
+          docker build \
+            --build-arg ARTIFACT_FILE="${ARTIFACT_NAME}" \
+            -t "$IMAGE" \
+            -t "${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:test-latest" \
+            .
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      # 3) Push to Docker Hub
+      - name: Push image (tagged + test-latest)
+        run: |
+          docker push "$IMAGE"
+          docker push "${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:test-latest"
+
+      # 4) Deploy to EC2 (compose project: test, host port: 8081)
+      - name: Deploy to EC2 (test)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host:     ${{ vars.EC2_HOST }}
+          username: ${{ vars.EC2_USER }}
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            APP_DIR=~/bookshop/test
+            mkdir -p "$APP_DIR"
+            cd "$APP_DIR"
+
+            curl -fsSL -o compose.deploy.yml \
+              https://raw.githubusercontent.com/${{ github.repository }}/test/compose.deploy.yml
+            curl -fsSL -o nginx.conf \
+              https://raw.githubusercontent.com/${{ github.repository }}/test/nginx.conf
+
+            cat > .env <<EOF
+            SECRET_KEY=${{ secrets.SECRET_KEY_TEST }}
+            DEBUG=False
+            ALLOWED_HOSTS=${{ vars.EC2_HOST }},localhost,127.0.0.1
+            POSTGRES_DB=${{ secrets.POSTGRES_DB_TEST }}
+            POSTGRES_USER=${{ secrets.POSTGRES_USER_TEST }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD_TEST }}
+            POSTGRES_HOST=db
+            POSTGRES_PORT=5432
+            EOF
+
+            export BACKEND_IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ vars.IMAGE_NAME }}:test-${{ github.sha }}"
+            export NGINX_PORT=8081
+
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            docker pull "$BACKEND_IMAGE"
+
+            docker compose -p test -f compose.deploy.yml down || true
+            BACKEND_IMAGE="$BACKEND_IMAGE" NGINX_PORT="$NGINX_PORT" \
+              docker compose -p test -f compose.deploy.yml up -d
+            docker compose -p test -f compose.deploy.yml ps
